@@ -1,0 +1,25 @@
+https://github.com/FreeRDP/FreeRDP
+https://github.com/chenall/tightvnc
+https://github.com/kirillsms/pvsvnc
+User other sources if you need.
+using these sources as reference create code for capturing screen on windows 10/11.
+It has to be service, running in windows.
+It has to save screen capture every second to a file (in future it will be a realtime translation, so we have to capture efficiently)
+It has to work on login screen and in user seccion, as well as captureing  UAC question windows.
+
+Use most simpe solution that can do all these things. You can use C++/Rust or combination
+
+1. we need most robust and compatible solution. and you are not restricted by language
+2. Jpg (or if it is simplier, png)
+3. Yes. handle multiple monitors. Image of each screen has to be captured via \\.\pipe\rarus-scr\0, \\.\pipe\rarus-scr\1 where 0 - all screens in one picture, 1 - only first screen etc.
+4. Do all needed action.
+5. Code has to handle windows messages for start/stop and all neccesary for using in sc commands.
+
+
+make full solution ready to compile. No any TODO or realize-youself sections. All parts has to be made ready.
+
+
+Add storing current captured image into ñ:/temp/captures/YYYY-MM-DD-hh-mm-ss.ext
+
+Give full compilation guide.
+
