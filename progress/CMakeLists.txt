@@ -7,6 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Force Unicode character set
 add_definitions(-DUNICODE -D_UNICODE)
 
+# Enable WinXP+ compatibility
+add_definitions(-D_WIN32_WINNT=0x0601) # Windows 7 compatibility
+
+# Add proper MSVC runtime linking
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # Add executable for the screen capture service
 add_executable(RarusScreenCapture 
     screen_capture_service.cpp
@@ -31,6 +37,12 @@ target_link_libraries(RarusScreenCapture
     d3d11        # Direct3D
     dxgi         # DXGI
     windowscodecs # WIC
+    advapi32     # Windows service API
+)
+
+# Add required libraries for the installer
+target_link_libraries(RarusServiceInstaller
+    advapi32     # Windows service API
 )
 
 # Create output directory for binary files
@@ -40,11 +52,13 @@ file(MAKE_DIRECTORY "C:/temp/captures")
 
 # Set output directory for executables
 set_target_properties(RarusScreenCapture PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${BINARY_OUTPUT_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${BINARY_OUTPUT_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${BINARY_OUTPUT_DIR}
 )
 
 set_target_properties(RarusServiceInstaller PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${BINARY_OUTPUT_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${BINARY_OUTPUT_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${BINARY_OUTPUT_DIR}
 )
 
 # Copy executables to install directory after build
@@ -59,6 +73,11 @@ add_custom_command(TARGET RarusServiceInstaller POST_BUILD
     $<TARGET_FILE:RarusServiceInstaller> 
     ${BINARY_OUTPUT_DIR}/RarusServiceInstaller.exe
 )
+
+# Ensure Visual C++ Redistributable DLLs are available
+if(MSVC)
+    include(InstallRequiredSystemLibraries)
+endif()
 
 # Output successful build message
 add_custom_command(TARGET RarusScreenCapture POST_BUILD

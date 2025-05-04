@@ -18,8 +18,20 @@
 #define SERVICE_DESCRIPTION L"Captures screen images periodically for remote viewing"
 #define SERVICE_START_TYPE SERVICE_AUTO_START
 #define SERVICE_DEPENDENCIES L""
-#define SERVICE_ACCOUNT NULL
+#define SERVICE_ACCOUNT NULL // NULL = LocalSystem
 #define SERVICE_PASSWORD NULL
+
+// Error logging function
+void LogError(const wchar_t* message, DWORD error = GetLastError()) {
+    HANDLE hEventLog = RegisterEventSourceW(NULL, SERVICE_NAME);
+    if (hEventLog) {
+        wchar_t errorMsg[256];
+        swprintf_s(errorMsg, L"%s (Error code: %lu)", message, error);
+        const wchar_t* strings[1] = { errorMsg };
+        ReportEventW(hEventLog, EVENTLOG_ERROR_TYPE, 0, 0, NULL, 1, 0, strings, NULL);
+        DeregisterEventSource(hEventLog);
+    }
+}
 
 BOOL InstallService(LPCWSTR servicePath);
 BOOL UninstallService();
@@ -28,11 +40,13 @@ BOOL StopInstService();
 
 int wmain(int argc, wchar_t* argv[]) {
     if (argc < 2) {
-        wprintf(L"Usage: %s [install|uninstall|start|stop]\n", argv[0]);
+        wprintf(L"RarusServiceInstaller - Install, uninstall, start, or stop the Rarus Screen Capture service.\n\n");
+        wprintf(L"Usage: %s [install|uninstall|start|stop] [service_path]\n", argv[0]);
         wprintf(L"  install   - Install the service\n");
         wprintf(L"  uninstall - Uninstall the service\n");
         wprintf(L"  start     - Start the service\n");
         wprintf(L"  stop      - Stop the service\n");
+        wprintf(L"  service_path - Optional path to the service executable (for install only)\n");
         return 1;
     }
 
@@ -42,6 +56,7 @@ int wmain(int argc, wchar_t* argv[]) {
         if (argc >= 3) {
             StringCbCopyW(servicePath, sizeof(servicePath), argv[2]);
         } else {
+            // Get the directory of the current executable
             GetModuleFileNameW(NULL, servicePath, MAX_PATH);
             
             // Remove the installer filename and add the service executable name
@@ -50,6 +65,14 @@ int wmain(int argc, wchar_t* argv[]) {
                 *(lastBackslash + 1) = L'\0';
                 StringCbCatW(servicePath, sizeof(servicePath), L"RarusScreenCapture.exe");
             }
+        }
+        
+        // Check if the service executable exists
+        DWORD fileAttributes = GetFileAttributesW(servicePath);
+        if (fileAttributes == INVALID_FILE_ATTRIBUTES) {
+            wprintf(L"Error: Service executable not found at '%s'\n", servicePath);
+            wprintf(L"Please specify the correct path to RarusScreenCapture.exe\n");
+            return 1;
         }
         
         if (InstallService(servicePath)) {
@@ -98,10 +121,25 @@ BOOL InstallService(LPCWSTR servicePath) {
     BOOL success = FALSE;
     SERVICE_DESCRIPTIONW serviceDescription = { const_cast<LPWSTR>(SERVICE_DESCRIPTION) };
 
+    wprintf(L"Installing service with path: %s\n", servicePath);
+
     // Open the service control manager
     schSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (schSCManager == NULL) {
-        wprintf(L"OpenSCManager failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"OpenSCManager failed: %d\n", error);
+        if (error == ERROR_ACCESS_DENIED) {
+            wprintf(L"Access denied. Make sure you're running as Administrator.\n");
+        }
+        goto cleanup;
+    }
+
+    // Check if service already exists
+    schService = OpenServiceW(schSCManager, SERVICE_NAME, SERVICE_QUERY_CONFIG);
+    if (schService != NULL) {
+        wprintf(L"Service already exists. Uninstall it first.\n");
+        CloseServiceHandle(schService);
+        schService = NULL;
         goto cleanup;
     }
 
@@ -118,12 +156,13 @@ BOOL InstallService(LPCWSTR servicePath) {
         NULL,                        // No load ordering group
         NULL,                        // No tag identifier
         SERVICE_DEPENDENCIES,        // Dependencies
-        SERVICE_ACCOUNT,             // Service account
+        SERVICE_ACCOUNT,             // Service account (LocalSystem)
         SERVICE_PASSWORD             // Password
     );
 
     if (schService == NULL) {
-        wprintf(L"CreateService failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"CreateService failed: %d\n", error);
         goto cleanup;
     }
 
@@ -133,6 +172,7 @@ BOOL InstallService(LPCWSTR servicePath) {
         // Continue anyway, this is not critical
     }
 
+    wprintf(L"Service created successfully.\n");
     success = TRUE;
 
 cleanup:
@@ -155,7 +195,11 @@ BOOL UninstallService() {
     // Open the service control manager
     schSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (schSCManager == NULL) {
-        wprintf(L"OpenSCManager failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"OpenSCManager failed: %d\n", error);
+        if (error == ERROR_ACCESS_DENIED) {
+            wprintf(L"Access denied. Make sure you're running as Administrator.\n");
+        }
         goto cleanup;
     }
 
@@ -163,11 +207,15 @@ BOOL UninstallService() {
     schService = OpenServiceW(
         schSCManager,
         SERVICE_NAME,
-        SERVICE_ALL_ACCESS
+        SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE
     );
 
     if (schService == NULL) {
-        wprintf(L"OpenService failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"OpenService failed: %d\n", error);
+        if (error == ERROR_SERVICE_DOES_NOT_EXIST) {
+            wprintf(L"Service does not exist.\n");
+        }
         goto cleanup;
     }
 
@@ -184,23 +232,31 @@ BOOL UninstallService() {
                     if (serviceStatus.dwCurrentState == SERVICE_STOPPED) {
                         break;
                     }
+                    wprintf(L".");
                     Sleep(1000);
                 }
+                wprintf(L"\n");
 
                 if (serviceStatus.dwCurrentState != SERVICE_STOPPED) {
-                    wprintf(L"Failed to stop service: %d\n", GetLastError());
+                    wprintf(L"Failed to stop service.\n");
                     // Continue anyway, try to delete it
                 }
+            }
+            else {
+                wprintf(L"ControlService failed: %d\n", GetLastError());
+                // Continue anyway, try to delete it
             }
         }
     }
 
     // Delete the service
     if (!DeleteService(schService)) {
-        wprintf(L"DeleteService failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"DeleteService failed: %d\n", error);
         goto cleanup;
     }
 
+    wprintf(L"Service deleted successfully.\n");
     success = TRUE;
 
 cleanup:
@@ -224,7 +280,11 @@ BOOL StartInstService() {
     // Open the service control manager
     schSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (schSCManager == NULL) {
-        wprintf(L"OpenSCManager failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"OpenSCManager failed: %d\n", error);
+        if (error == ERROR_ACCESS_DENIED) {
+            wprintf(L"Access denied. Make sure you're running as Administrator.\n");
+        }
         goto cleanup;
     }
 
@@ -232,11 +292,15 @@ BOOL StartInstService() {
     schService = OpenServiceW(
         schSCManager,
         SERVICE_NAME,
-        SERVICE_ALL_ACCESS
+        SERVICE_START | SERVICE_QUERY_STATUS
     );
 
     if (schService == NULL) {
-        wprintf(L"OpenService failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"OpenService failed: %d\n", error);
+        if (error == ERROR_SERVICE_DOES_NOT_EXIST) {
+            wprintf(L"Service does not exist. Install it first.\n");
+        }
         goto cleanup;
     }
 
@@ -259,7 +323,8 @@ BOOL StartInstService() {
 
     // Start the service
     if (!StartService(schService, 0, NULL)) {
-        wprintf(L"StartService failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"StartService failed: %d\n", error);
         goto cleanup;
     }
 
@@ -293,13 +358,14 @@ BOOL StartInstService() {
             goto cleanup;
         }
     }
+    wprintf(L"\n");
 
     if (serviceStatus.dwCurrentState != SERVICE_RUNNING) {
-        wprintf(L"\nService failed to start: %d\n", GetLastError());
+        wprintf(L"Service failed to start. Status: %d\n", serviceStatus.dwCurrentState);
         goto cleanup;
     }
 
-    wprintf(L"\nService started successfully.\n");
+    wprintf(L"Service started successfully.\n");
     success = TRUE;
 
 cleanup:
@@ -323,7 +389,11 @@ BOOL StopInstService() {
     // Open the service control manager
     schSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (schSCManager == NULL) {
-        wprintf(L"OpenSCManager failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"OpenSCManager failed: %d\n", error);
+        if (error == ERROR_ACCESS_DENIED) {
+            wprintf(L"Access denied. Make sure you're running as Administrator.\n");
+        }
         goto cleanup;
     }
 
@@ -331,11 +401,15 @@ BOOL StopInstService() {
     schService = OpenServiceW(
         schSCManager,
         SERVICE_NAME,
-        SERVICE_ALL_ACCESS
+        SERVICE_STOP | SERVICE_QUERY_STATUS
     );
 
     if (schService == NULL) {
-        wprintf(L"OpenService failed: %d\n", GetLastError());
+        DWORD error = GetLastError();
+        wprintf(L"OpenService failed: %d\n", error);
+        if (error == ERROR_SERVICE_DOES_NOT_EXIST) {
+            wprintf(L"Service does not exist.\n");
+        }
         goto cleanup;
     }
 
@@ -392,13 +466,14 @@ BOOL StopInstService() {
             goto cleanup;
         }
     }
+    wprintf(L"\n");
 
     if (serviceStatus.dwCurrentState != SERVICE_STOPPED) {
-        wprintf(L"\nService failed to stop: %d\n", GetLastError());
+        wprintf(L"Service failed to stop. Status: %d\n", serviceStatus.dwCurrentState);
         goto cleanup;
     }
 
-    wprintf(L"\nService stopped successfully.\n");
+    wprintf(L"Service stopped successfully.\n");
     success = TRUE;
 
 cleanup:
